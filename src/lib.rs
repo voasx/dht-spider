@@ -16,6 +16,8 @@ pub mod token;
 pub mod transaction;
 pub mod command;
 pub mod wire;
+pub mod storage;
+pub mod web;
 
 pub use dht::{Config, Dht};
 pub use crate::types::Mode;

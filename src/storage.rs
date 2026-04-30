@@ -79,4 +79,19 @@ impl Storage {
         let total: u32 = conn.query_row("SELECT COUNT(*) FROM torrents", [], |r| r.get(0))?;
         Ok(total)
     }
+
+    pub fn get_by_infohash(&self, infohash: &str) -> Result<Option<TorrentEntry>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT infohash, name, files, created_at FROM torrents WHERE infohash = ?1")?;
+        let mut rows = stmt.query(params![infohash])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(TorrentEntry {
+                infohash: row.get(0)?,
+                name: row.get(1)?,
+                files: row.get(2)?,
+                created_at: row.get(3)?,
+            })),
+            None => Ok(None),
+        }
+    }
 }

@@ -390,6 +390,7 @@ impl Dht {
     }
 }
 
+#[derive(Clone)]
 pub struct DhtHandle { tx: tokio::sync::mpsc::Sender<DhtCommand> }
 impl DhtHandle {
     pub async fn get_peers(&self, info_hash: &str) { let _ = self.tx.send(DhtCommand::GetPeers{ info_hash: info_hash.to_string() }).await; }

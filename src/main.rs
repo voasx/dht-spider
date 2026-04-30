@@ -25,6 +25,8 @@ async fn main() {
 	let storage = Arc::new(Storage::open("torrents.db").expect("failed to open torrents.db"));
 
 	let (runner, handle) = WireRunner::new(65536, 4096, 256);
+	let wire_for_announce = handle.clone_handle();
+	let wire_for_getpeers = handle.clone_handle();
 	{
 		let mut sub = handle.subscribe();
 		let storage_meta = storage.clone();
@@ -107,14 +109,14 @@ async fn main() {
 			});
 		println!("{}", line.to_string());
 		if let Ok(bytes) = hex::decode(&ih) {
-			let handle = handle.clone_handle();
+			let h = wire_for_announce.clone_handle();
 			tokio::spawn(async move {
-				handle.request(&bytes, &ip, port).await;
+				h.request(&bytes, &ip, port).await;
 			});
 		}
 	}));
 
-	d.callbacks.on_get_peers_response = Some(Arc::new(|ih, peer| {
+	d.callbacks.on_get_peers_response = Some(Arc::new(move |ih, peer| {
 		let line = json!({
 			"type": "peer",
 			"ip": peer.ip.to_string(),
@@ -122,6 +124,14 @@ async fn main() {
 			"info_hash": ih
 		});
 		println!("{}", line.to_string());
+		if let Ok(bytes) = hex::decode(&ih) {
+			let h = wire_for_getpeers.clone_handle();
+			let ip = peer.ip.to_string();
+			let port = peer.port;
+			tokio::spawn(async move {
+				h.request(&bytes, &ip, port).await;
+			});
+		}
 	}));
 
 	d.callbacks.on_node = Some(Arc::new(|id_hex, ip, port| {
@@ -134,13 +144,13 @@ async fn main() {
 		println!("{}", line.to_string());
 	}));
 
-	let _handle = d.start();
+	let dht_handle = d.start();
 
 	// 启动 Web 服务器
 	{
 		let web_storage = storage.clone();
 		tokio::spawn(async move {
-			web::start_server(web_storage, 3000).await;
+			web::start_server(web_storage, dht_handle, 3000).await;
 		});
 	}
 

@@ -1,9 +1,11 @@
 use crate::dht::DhtHandle;
 use crate::storage::Storage;
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::header,
-    response::IntoResponse,
+    http::{header, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -16,6 +18,7 @@ use tower_http::cors::CorsLayer;
 struct AppState {
     storage: Arc<Storage>,
     dht: DhtHandle,
+    secret_key: String,
 }
 
 #[derive(Deserialize)]
@@ -30,13 +33,18 @@ struct QueryBody {
     query: String,
 }
 
-pub async fn start_server(storage: Arc<Storage>, dht: DhtHandle, port: u16) {
-    let state = AppState { storage, dht };
-    let app = Router::new()
-        .route("/", get(index))
+pub async fn start_server(storage: Arc<Storage>, dht: DhtHandle, secret_key: String, port: u16) {
+    let state = AppState { storage, dht, secret_key };
+    let api_routes = Router::new()
         .route("/api/torrents", get(api_torrents))
         .route("/api/query/:infohash", get(api_query_status))
         .route("/api/query", axum::routing::post(api_query_start))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/api/auth", axum::routing::post(api_auth))
+        .merge(api_routes)
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -44,6 +52,28 @@ pub async fn start_server(storage: Arc<Storage>, dht: DhtHandle, port: u16) {
     println!("{}", json!({"level":"info","event":"web_server","listen":format!("http://{}", addr)}).to_string());
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     let _ = axum::serve(listener, app).await;
+}
+
+async fn auth_middleware(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if let Some(key) = req.headers().get("X-Access-Key") {
+        if key.to_str().map(|k| k == state.secret_key).unwrap_or(false) {
+            return Ok(next.run(req).await);
+        }
+    }
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+async fn api_auth(State(state): State<AppState>, axum::Json(body): axum::Json<Value>) -> impl IntoResponse {
+    let key = body.get("key").and_then(|v| v.as_str()).unwrap_or("");
+    if key == state.secret_key {
+        (StatusCode::OK, json!({"status":"ok"}).to_string())
+    } else {
+        (StatusCode::UNAUTHORIZED, json!({"status":"error","message":"密钥错误"}).to_string())
+    }.into_response()
 }
 
 async fn index() -> impl IntoResponse {
@@ -86,7 +116,6 @@ async fn api_query_start(State(state): State<AppState>, axum::Json(body): axum::
     let infohash = parse_infohash(&input);
     match infohash {
         Some(ih) => {
-            // check if already in db
             let storage = state.storage.clone();
             let ih_clone = ih.clone();
             let existing = tokio::task::spawn_blocking(move || storage.get_by_infohash(&ih_clone)).await;
@@ -102,7 +131,6 @@ async fn api_query_start(State(state): State<AppState>, axum::Json(body): axum::
                     "created_at": entry.created_at
                 }).to_string()).into_response();
             }
-            // trigger DHT query
             let dht = state.dht.clone();
             let ih_for_resp = ih.clone();
             tokio::spawn(async move {
@@ -136,7 +164,6 @@ async fn api_query_status(State(state): State<AppState>, Path(infohash): Path<St
 
 fn parse_infohash(input: &str) -> Option<String> {
     let s = input.trim();
-    // magnet:?xt=urn:btih:HEX...
     if s.starts_with("magnet:") {
         for part in s.strip_prefix("magnet:?").unwrap_or(s).split('&') {
             if let Some(hash) = part.strip_prefix("xt=urn:btih:") {
@@ -148,7 +175,6 @@ fn parse_infohash(input: &str) -> Option<String> {
         }
         return None;
     }
-    // plain 40-char hex
     let h = s.to_lowercase();
     if h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()) {
         return Some(h);
@@ -177,6 +203,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .refresh-btn:hover{background:#7dd3fc}
 .query-btn{background:#a78bfa;color:#0f172a;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;transition:background .2s}
 .query-btn:hover{background:#c4b5fd}
+.row-query-btn{background:#a78bfa;color:#0f172a;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:500;transition:background .2s}
+.row-query-btn:hover{background:#c4b5fd}
 .auto-refresh{display:flex;align-items:center;gap:6px;font-size:13px;color:#94a3b8}
 .auto-refresh input{accent-color:#38bdf8}
 table{width:100%;border-collapse:collapse}
@@ -196,6 +224,18 @@ td.time{color:#64748b;font-size:12px}
 .pagination .info{color:#94a3b8;font-size:13px}
 .empty{text-align:center;padding:60px 20px;color:#64748b;font-size:15px}
 .container{max-width:1400px;margin:0 auto}
+
+/* auth gate */
+.auth-gate{position:fixed;inset:0;background:#0f172a;z-index:999;display:flex;justify-content:center;align-items:center}
+.auth-box{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:40px;width:400px;max-width:90vw;text-align:center}
+.auth-box h2{font-size:20px;font-weight:600;color:#38bdf8;margin-bottom:8px}
+.auth-box p{font-size:13px;color:#64748b;margin-bottom:24px}
+.auth-input{width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 16px;color:#e2e8f0;font-size:14px;outline:none;transition:border-color .2s;margin-bottom:16px;text-align:center;font-family:"SF Mono",Menlo,monospace;letter-spacing:1px}
+.auth-input:focus{border-color:#38bdf8}
+.auth-submit{width:100%;background:#38bdf8;color:#0f172a;border:none;padding:12px;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600;transition:background .2s}
+.auth-submit:hover{background:#7dd3fc}
+.auth-submit:disabled{opacity:.5;cursor:default}
+.auth-error{color:#f87171;font-size:13px;margin-top:12px;display:none}
 
 /* modal */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;justify-content:center;align-items:center}
@@ -236,6 +276,19 @@ td.time{color:#64748b;font-size:12px}
 </style>
 </head>
 <body>
+
+<!-- 密钥认证门 -->
+<div class="auth-gate" id="authGate">
+  <div class="auth-box">
+    <h2>DHT Spider</h2>
+    <p>请输入访问密钥以继续</p>
+    <input class="auth-input" id="authInput" type="password" placeholder="输入访问密钥" autofocus />
+    <button class="auth-submit" id="authSubmit" onclick="tryAuth()">验证</button>
+    <div class="auth-error" id="authError">密钥错误，请重试</div>
+  </div>
+</div>
+
+<div id="mainApp" style="display:none">
 <div class="header">
   <h1>DHT Spider - 种子爬虫</h1>
   <div class="stats">
@@ -252,13 +305,12 @@ td.time{color:#64748b;font-size:12px}
     </div>
   </div>
   <div style="display:flex;gap:8px">
-    <button class="query-btn" onclick="openModal()">查询</button>
     <button class="refresh-btn" onclick="loadData()">刷新</button>
   </div>
 </div>
 <div class="container">
   <table>
-    <thead><tr><th>#</th><th>名称</th><th>哈希值</th><th>文件数</th><th>大小</th><th>发现时间</th></tr></thead>
+    <thead><tr><th>#</th><th>名称</th><th>哈希值</th><th>文件数</th><th>大小</th><th>发现时间</th><th>操作</th></tr></thead>
     <tbody id="tbody"></tbody>
   </table>
   <div id="empty" class="empty" style="display:none">暂无数据，等待爬取中...</div>
@@ -273,25 +325,61 @@ td.time{color:#64748b;font-size:12px}
       <button class="modal-close" onclick="closeModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <div class="modal-input-row">
-        <input class="modal-input" id="queryInput" placeholder="输入磁力链接或 InfoHash (40位十六进制)" />
-        <button class="modal-submit" id="querySubmit" onclick="startQuery()">查询</button>
-      </div>
       <div id="queryStatus"></div>
       <div id="queryResult"></div>
     </div>
   </div>
 </div>
+</div>
 
 <script>
 let curPage=1,curSearch='',totalPages=0,refreshTimer=null,pollTimer=null;
+
+function getKey(){return localStorage.getItem('dht_access_key')||''}
+function authHeaders(){return {'X-Access-Key':getKey(),'Content-Type':'application/json'}}
+
+// auth
+async function tryAuth(){
+  let key=document.getElementById('authInput').value.trim();
+  if(!key)return;
+  let btn=document.getElementById('authSubmit');
+  btn.disabled=true;
+  try{
+    let r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key})});
+    if(r.ok){
+      localStorage.setItem('dht_access_key',key);
+      document.getElementById('authGate').style.display='none';
+      document.getElementById('mainApp').style.display='block';
+      loadData();startAutoRefresh();
+    }else{
+      document.getElementById('authError').style.display='block';
+      document.getElementById('authInput').value='';
+      document.getElementById('authInput').focus();
+    }
+  }catch(e){document.getElementById('authError').style.display='block'}
+  btn.disabled=false;
+}
+document.getElementById('authInput').addEventListener('keydown',function(e){if(e.key==='Enter')tryAuth()});
+
+// auto-auth on load
+(function(){
+  let saved=localStorage.getItem('dht_access_key');
+  if(saved){
+    fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:saved})}).then(r=>{
+      if(r.ok){document.getElementById('authGate').style.display='none';document.getElementById('mainApp').style.display='block';loadData();startAutoRefresh();}
+      else{localStorage.removeItem('dht_access_key');document.getElementById('authInput').focus();}
+    }).catch(()=>{document.getElementById('authInput').focus()});
+  }else{document.getElementById('authInput').focus()}
+})();
+
 function fmtSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';if(b<1073741824)return(b/1048576).toFixed(1)+'MB';return(b/1073741824).toFixed(2)+'GB'}
 function fmtTime(ts){let d=new Date(ts*1000);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')}
 function esc(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}
 async function loadData(){
   let url='/api/torrents?page='+curPage+(curSearch?'&search='+encodeURIComponent(curSearch):'');
   try{
-    let r=await fetch(url);let d=await r.json();
+    let r=await fetch(url,{headers:authHeaders()});if(r.status===401){handleUnauthorized();return}
+    let d=await r.json();
     document.getElementById('stat-total').textContent='总计: '+d.total;
     document.getElementById('stat-pages').textContent='页数: '+d.total_pages;
     totalPages=d.total_pages;
@@ -307,6 +395,7 @@ async function loadData(){
         '<td>'+r.file_count+'</td>'+
         '<td class="size">'+fmtSize(r.total_size)+'</td>'+
         '<td class="time">'+fmtTime(r.created_at)+'</td>'+
+        '<td><button class="row-query-btn" onclick="queryRow(\''+esc(r.infohash)+'\')">查询</button></td>'+
       '</tr>').join('');
     }
     renderPagination(d.total,d.total_pages);
@@ -330,61 +419,55 @@ function startAutoRefresh(){if(refreshTimer)clearInterval(refreshTimer);if(docum
 document.getElementById('search').addEventListener('keydown',function(e){if(e.key==='Enter'){curSearch=this.value.trim();curPage=1;loadData()}});
 document.getElementById('autoRefresh').addEventListener('change',startAutoRefresh);
 
-// modal
-function openModal(){
-  document.getElementById('modalOverlay').classList.add('active');
-  document.getElementById('queryInput').value='';
-  document.getElementById('queryStatus').innerHTML='';
-  document.getElementById('queryResult').innerHTML='';
-  document.getElementById('queryInput').focus();
+function handleUnauthorized(){
+  localStorage.removeItem('dht_access_key');
+  document.getElementById('authGate').style.display='flex';
+  document.getElementById('mainApp').style.display='none';
+  document.getElementById('authInput').value='';
+  document.getElementById('authInput').focus();
 }
+
+// modal
 function closeModal(){
   document.getElementById('modalOverlay').classList.remove('active');
   if(pollTimer){clearInterval(pollTimer);pollTimer=null}
 }
 document.getElementById('modalOverlay').addEventListener('click',function(e){if(e.target===this)closeModal()});
-document.getElementById('queryInput').addEventListener('keydown',function(e){if(e.key==='Enter')startQuery()});
 
-async function startQuery(){
-  let input=document.getElementById('queryInput').value.trim();
-  if(!input){return}
-  let btn=document.getElementById('querySubmit');
-  btn.disabled=true;
+async function queryRow(infohash){
+  document.getElementById('modalOverlay').classList.add('active');
   document.getElementById('queryStatus').innerHTML='<div class="modal-status"><span class="spinner"></span>正在查询中...</div>';
   document.getElementById('queryResult').innerHTML='';
   if(pollTimer){clearInterval(pollTimer);pollTimer=null}
   try{
-    let r=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:input})});
+    let r=await fetch('/api/query',{method:'POST',headers:authHeaders(),body:JSON.stringify({query:infohash})});
+    if(r.status===401){handleUnauthorized();return}
     let d=await r.json();
-    if(d.status==='error'){
-      document.getElementById('queryStatus').innerHTML='<div class="error-msg">'+esc(d.message)+'</div>';
-      btn.disabled=false;return;
-    }
     if(d.status==='found'){
       document.getElementById('queryStatus').innerHTML='';
-      renderResult(d);btn.disabled=false;return;
+      renderResult(d);return;
     }
     // searching -> poll
-    let ih=d.infohash;
     let attempts=0;
     pollTimer=setInterval(async function(){
       attempts++;
       if(attempts>60){clearInterval(pollTimer);pollTimer=null;
         document.getElementById('queryStatus').innerHTML='<div class="modal-status">查询超时，元数据可能尚未就绪，请稍后在列表中查看</div>';
-        btn.disabled=false;return;
+        return;
       }
       try{
-        let pr=await fetch('/api/query/'+ih);let pd=await pr.json();
+        let pr=await fetch('/api/query/'+infohash,{headers:authHeaders()});
+        if(pr.status===401){handleUnauthorized();clearInterval(pollTimer);pollTimer=null;return}
+        let pd=await pr.json();
         if(pd.status==='found'){
           clearInterval(pollTimer);pollTimer=null;
           document.getElementById('queryStatus').innerHTML='';
-          renderResult(pd);btn.disabled=false;
+          renderResult(pd);
         }
       }catch(e){}
     },2000);
   }catch(e){
     document.getElementById('queryStatus').innerHTML='<div class="error-msg">网络错误</div>';
-    btn.disabled=false;
   }
 }
 
@@ -398,8 +481,6 @@ function renderResult(d){
   html+='<tr><th>总大小</th><td style="color:#a78bfa">'+fmtSize(totalSize)+'</td></tr>';
   html+='<tr><th>发现时间</th><td style="color:#64748b">'+fmtTime(d.created_at)+'</td></tr>';
   html+='</table>';
-
-  // file list
   if(d.files.length>0){
     let sorted=[...d.files].sort((a,b)=>(b.length||0)-(a.length||0));
     html+='<div class="file-list">';
@@ -431,8 +512,6 @@ function showToast(msg){
   document.body.appendChild(t);
   setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.remove()},300)},1500);
 }
-
-loadData();startAutoRefresh();
 </script>
 </body>
 </html>"##;

@@ -146,11 +146,19 @@ async fn main() {
 
 	let dht_handle = d.start();
 
+	// 生成访问密钥
+	let secret_key = {
+		let mut key_bytes = [0u8; 16];
+		rand::Rng::fill(&mut rand::thread_rng(), &mut key_bytes);
+		hex::encode(key_bytes)
+	};
+	println!("{}", json!({"level":"info","event":"access_key","key":secret_key,"hint":"在浏览器中输入此密钥以访问 Web 面板"}).to_string());
+
 	// 启动 Web 服务器
 	{
 		let web_storage = storage.clone();
 		tokio::spawn(async move {
-			web::start_server(web_storage, dht_handle, 3000).await;
+			web::start_server(web_storage, dht_handle, secret_key, 3000).await;
 		});
 	}
 

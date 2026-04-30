@@ -473,10 +473,18 @@ async function queryRow(infohash){
 
 function renderResult(d){
   let totalSize=d.files.reduce((a,f)=>a+(f.length||0),0);
+  let magnet='magnet:?xt=urn:btih:'+d.infohash;
+  if(d.name)magnet+='&dn='+encodeURIComponent(d.name);
+  magnet+='&tr='+encodeURIComponent('udp://tracker.opentrackr.org:1337/announce');
+  magnet+='&tr='+encodeURIComponent('udp://open.stealth.si:80/announce');
+  magnet+='&tr='+encodeURIComponent('udp://tracker.torrent.eu.org:451/announce');
+  magnet+='&tr='+encodeURIComponent('udp://exodus.desync.com:6969/announce');
+  magnet+='&tr='+encodeURIComponent('udp://tracker.tiny-vps.com:6969/announce');
+  window._magnetLink=magnet;
   let html='<table class="result-table">';
   html+='<tr><th>名称</th><td class="result-name">'+esc(d.name)+'</td></tr>';
-  html+='<tr><th>哈希值</th><td><span class="result-hash" onclick="copyText(\''+esc(d.infohash)+'\')">'+esc(d.infohash)+'</span><button class="copy-btn" onclick="copyText(\''+esc(d.infohash)+'\')">复制</button></td></tr>';
-  html+='<tr><th>磁力链接</th><td><button class="copy-btn" onclick="copyText(\'magnet:?xt=urn:btih:'+esc(d.infohash)+'\')">复制磁力链接</button></td></tr>';
+  html+='<tr><th>哈希值</th><td><span class="result-hash">'+esc(d.infohash)+'</span><button class="copy-btn" onclick="copyText(\''+esc(d.infohash)+'\')">复制</button></td></tr>';
+  html+='<tr><th>磁力链接</th><td style="word-break:break-all"><code style="font-size:11px;color:#38bdf8">'+esc(magnet)+'</code><button class="copy-btn" onclick="copyText(window._magnetLink)">复制磁力链接</button></td></tr>';
   html+='<tr><th>文件数</th><td>'+d.files.length+' 个文件</td></tr>';
   html+='<tr><th>总大小</th><td style="color:#a78bfa">'+fmtSize(totalSize)+'</td></tr>';
   html+='<tr><th>发现时间</th><td style="color:#64748b">'+fmtTime(d.created_at)+'</td></tr>';
@@ -501,9 +509,18 @@ function toggleFiles(){
   else{body.style.display='none';arrow.innerHTML='&#9654;'}
 }
 function copyText(text){
-  navigator.clipboard.writeText(text).then(function(){
-    showToast('已复制到剪贴板');
-  });
+  try{
+    if(navigator.clipboard&&window.isSecureContext){
+      navigator.clipboard.writeText(text).then(function(){showToast('已复制到剪贴板')}).catch(function(){fallbackCopy(text)});
+    }else{fallbackCopy(text)}
+  }catch(e){fallbackCopy(text)}
+}
+function fallbackCopy(text){
+  let ta=document.createElement('textarea');
+  ta.value=text;ta.style.cssText='position:fixed;left:-9999px;top:-9999px';
+  document.body.appendChild(ta);ta.select();
+  try{document.execCommand('copy');showToast('已复制到剪贴板')}catch(e){showToast('复制失败')}
+  document.body.removeChild(ta);
 }
 function showToast(msg){
   let t=document.createElement('div');

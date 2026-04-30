@@ -31,7 +31,7 @@ async fn main() {
 		let mut sub = handle.subscribe();
 		let storage_meta = storage.clone();
 		tokio::spawn(async move { runner.run().await; });
-		// metadata 订阅
+		// metadata 订阅 —— 只输出成功下载的元数据
 		tokio::spawn(async move {
 			while let Ok(resp) = sub.recv().await {
 				let infohash_hex = hex::encode(resp.request.info_hash);
@@ -69,7 +69,6 @@ async fn main() {
 							});
 							println!("{}", line.to_string());
 
-							// 存入 SQLite
 							let files_json = serde_json::to_string(&out_files).unwrap_or_default();
 							let db = storage_meta.clone();
 							let ih = infohash_hex.clone();
@@ -89,59 +88,33 @@ async fn main() {
 		let mut psub = handle.subscribe_peers();
 		tokio::spawn(async move {
 			while let Ok(evt) = psub.recv().await {
-				let line = json!({
-					"type": "peer",
-					"ip": evt.ip,
-					"port": evt.port,
-					"info_hash": hex::encode(evt.info_hash)
-				});
-				println!("{}", line.to_string());
+				let _ = evt;
 			}
 		});
 	}
 
 	d.callbacks.on_announce_peer = Some(Arc::new(move |ih, ip, port| {
-			let line = json!({
-				"type": "peer",
-				"ip": ip,
-				"port": port,
-				"info_hash": ih
-			});
-		println!("{}", line.to_string());
-		if let Ok(bytes) = hex::decode(&ih) {
-			let h = wire_for_announce.clone_handle();
-			tokio::spawn(async move {
-				h.request(&bytes, &ip, port).await;
-			});
-		}
-	}));
+			if let Ok(bytes) = hex::decode(&ih) {
+				let h = wire_for_announce.clone_handle();
+				tokio::spawn(async move {
+					h.request(&bytes, &ip, port).await;
+				});
+			}
+		}));
 
 	d.callbacks.on_get_peers_response = Some(Arc::new(move |ih, peer| {
-		let line = json!({
-			"type": "peer",
-			"ip": peer.ip.to_string(),
-			"port": peer.port,
-			"info_hash": ih
-		});
-		println!("{}", line.to_string());
-		if let Ok(bytes) = hex::decode(&ih) {
-			let h = wire_for_getpeers.clone_handle();
-			let ip = peer.ip.to_string();
-			let port = peer.port;
-			tokio::spawn(async move {
-				h.request(&bytes, &ip, port).await;
-			});
-		}
-	}));
+			if let Ok(bytes) = hex::decode(&ih) {
+				let h = wire_for_getpeers.clone_handle();
+				let ip = peer.ip.to_string();
+				let port = peer.port;
+				tokio::spawn(async move {
+					h.request(&bytes, &ip, port).await;
+				});
+			}
+		}));
 
-	d.callbacks.on_node = Some(Arc::new(|id_hex, ip, port| {
-		let line = json!({
-			"type": "node",
-			"id": id_hex,
-			"ip": ip,
-			"port": port
-		});
-		println!("{}", line.to_string());
+	d.callbacks.on_node = Some(Arc::new(|_id_hex, _ip, _port| {
+		// DHT 节点发现事件静默处理
 	}));
 
 	let dht_handle = d.start();

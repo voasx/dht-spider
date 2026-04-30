@@ -4,6 +4,7 @@ use crate::bencode::{self as be, BVal};
 use dashmap::DashMap;
 use sha1::{Digest, Sha1};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, Semaphore};
@@ -46,7 +47,7 @@ pub struct PeerEvent {
 
 pub struct Wire {
     blacklist: Arc<BlackList>,
-    queue: DashMap<String, ()>,
+    queue: DashMap<String, Instant>,
     resp_tx: broadcast::Sender<Response>,
     peer_tx: broadcast::Sender<PeerEvent>,
     worker_sem: Arc<Semaphore>,
@@ -69,10 +70,6 @@ impl Wire {
     pub fn peer_events(&self) -> broadcast::Receiver<PeerEvent> { self.peer_tx.subscribe() }
 }
 
-// We can't subscribe to mpsc sender; implement a dedicated runner function
-// Legacy placeholder removed: public start() not required; WireRunner drives requests.
-
-// A simpler functional runner that accepts an owned receiver
 pub struct WireRunner {
     wire: Wire,
     req_rx: mpsc::Receiver<Request>,
@@ -89,33 +86,31 @@ impl WireRunner {
 
     pub async fn run(mut self) {
         let bl = self.wire.blacklist.clone();
+        let queue_clean = self.wire.queue.clone();
         tokio::spawn(async move {
-            loop { tokio::time::sleep(Duration::from_secs(180)).await; bl.clear_expired(); }
+            loop {
+                tokio::time::sleep(Duration::from_secs(180)).await;
+                bl.clear_expired();
+                let cutoff = Instant::now() - Duration::from_secs(600);
+                queue_clean.retain(|_, v| *v > cutoff);
+            }
         });
 
         while let Some(r) = self.req_rx.recv().await {
-            // dedupe and blacklist checks
             let key = format!("{}:{}:{}", hex::encode(r.info_hash), r.ip, r.port);
             if r.info_hash.len() != 20 || self.wire.blacklist.contains(&r.ip, Some(r.port)) || self.wire.queue.contains_key(&key) {
                 continue;
             }
-            self.wire.queue.insert(key.clone(), ());
+            self.wire.queue.insert(key.clone(), Instant::now());
             let sem = self.wire.worker_sem.clone();
             let resp_tx = self.wire.resp_tx.clone();
             let peer_tx = self.wire.peer_tx.clone();
             let queue = self.wire.queue.clone();
             let bl2 = self.wire.blacklist.clone();
-            // To re-enqueue within the same runner, create a lightweight forwarder channel
-            let (forward_tx, mut forward_rx) = mpsc::channel::<Request>(128);
-            let req_tx_for_loop = self.req_tx.clone();
-            tokio::spawn(async move {
-                while let Some(req) = forward_rx.recv().await {
-                    let _ = req_tx_for_loop.send(req).await;
-                }
-            });
+            let requeue = self.req_tx.clone();
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
-                let _ = fetch_metadata(r.clone(), resp_tx.clone(), peer_tx.clone(), forward_tx.clone(), bl2.clone()).await;
+                let _ = fetch_metadata(r.clone(), resp_tx.clone(), peer_tx.clone(), requeue, bl2.clone()).await;
                 queue.remove(&key);
             });
         }
@@ -231,6 +226,7 @@ async fn read_message(stream: &mut TcpStream) -> Result<(u32, Vec<u8>), ()> {
     let _ = timeout(Duration::from_secs(15), stream.read_exact(&mut len_buf)).await.map_err(|_| ())?;
     let length = u32::from_be_bytes(len_buf);
     if length == 0 { return Ok((0, Vec::new())); }
+    if length > 1_048_576 { return Err(()); }
     let mut payload = vec![0u8; length as usize];
     let _ = timeout(Duration::from_secs(15), stream.read_exact(&mut payload)).await.map_err(|_| ())?;
     Ok((length, payload))

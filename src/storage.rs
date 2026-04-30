@@ -24,7 +24,8 @@ impl Storage {
                  name      TEXT NOT NULL,
                  files     TEXT NOT NULL,
                  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-             );"
+             );
+             CREATE INDEX IF NOT EXISTS idx_torrents_created_at ON torrents(created_at);"
         )?;
         Ok(Self { conn: Mutex::new(conn) })
     }

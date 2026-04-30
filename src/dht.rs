@@ -342,6 +342,7 @@ impl Dht {
                             for addr in expired { if d.trans.get_by_index("ping", &addr.to_string()).is_some() { continue; } let tid = d.trans.gen_id(); let (tx,_rx)=tokio::sync::oneshot::channel::<()>(); let trans = crate::transaction::Transaction{ trans_id_bytes: tid.clone(), addr, qtype: "ping".into(), responder: Some(tx), info_hash: None, target: None, announce_port: None, announce_implied_port: false, created_at: Instant::now(), retries: 0 }; d.trans.insert(trans); let a = crate::bencode::dict(vec![("id".into(), bytes(&d.select_id_for(None)))]); let buf = crate::krpc::make_query(&tid, "ping", a); let _ = socket.try_send_to(&buf, addr); }
                             d.tokens.clear_expired();
                             d.blacklist.clear_expired();
+                            d.routing.prune(Instant::now(), d.cfg.node_expired_after, d.cfg.max_nodes);
                         }
                     },
                     Some(cmd) = rx.recv() => {

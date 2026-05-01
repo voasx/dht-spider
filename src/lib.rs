@@ -18,6 +18,7 @@ pub mod command;
 pub mod wire;
 pub mod storage;
 pub mod web;
+pub mod logger;
 
 pub use dht::{Config, Dht};
 pub use crate::types::Mode;

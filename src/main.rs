@@ -112,34 +112,16 @@ async fn main() {
         });
 
         // Peer Exchange (PeX) 订阅
-        let logger_pex = logger.clone();
         let mut psub = handle.subscribe_peers();
         tokio::spawn(async move {
             while let Ok(evt) = psub.recv().await {
-                let line = json!({
-                    "type": "peer",
-                    "ip": evt.ip,
-                    "port": evt.port,
-                    "info_hash": hex::encode(evt.info_hash)
-                });
-                let line_str = line.to_string();
-                println!("{}", line_str);
-                logger_pex.log(&line_str);
+                println!("{}", json!({"type":"peer","ip":evt.ip,"port":evt.port,"info_hash":hex::encode(evt.info_hash)}));
             }
         });
     }
 
-    let logger_ann = logger.clone();
     d.callbacks.on_announce_peer = Some(Arc::new(move |ih, ip, port| {
-            let line = json!({
-                "type": "peer",
-                "ip": ip,
-                "port": port,
-                "info_hash": ih
-            });
-            let line_str = line.to_string();
-            println!("{}", line_str);
-            logger_ann.log(&line_str);
+            println!("{}", json!({"type":"peer","ip":ip,"port":port,"info_hash":ih}));
             if let Ok(bytes) = hex::decode(&ih) {
                 let h = wire_for_announce.clone_handle();
                 tokio::spawn(async move {
@@ -148,17 +130,8 @@ async fn main() {
             }
         }));
 
-    let logger_gp = logger.clone();
     d.callbacks.on_get_peers_response = Some(Arc::new(move |ih, peer| {
-            let line = json!({
-                "type": "peer",
-                "ip": peer.ip.to_string(),
-                "port": peer.port,
-                "info_hash": ih
-            });
-            let line_str = line.to_string();
-            println!("{}", line_str);
-            logger_gp.log(&line_str);
+            println!("{}", json!({"type":"peer","ip":peer.ip.to_string(),"port":peer.port,"info_hash":ih}));
             if let Ok(bytes) = hex::decode(&ih) {
                 let h = wire_for_getpeers.clone_handle();
                 let ip = peer.ip.to_string();
@@ -169,17 +142,8 @@ async fn main() {
             }
         }));
 
-    let logger_node = logger.clone();
     d.callbacks.on_node = Some(Arc::new(move |id_hex, ip, port| {
-            let line = json!({
-                "type": "node",
-                "id": id_hex,
-                "ip": ip,
-                "port": port
-            });
-            let line_str = line.to_string();
-            println!("{}", line_str);
-            logger_node.log(&line_str);
+            println!("{}", json!({"type":"node","id":id_hex,"ip":ip,"port":port}));
         }));
 
     let dht_handle = d.start();

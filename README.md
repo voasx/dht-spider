@@ -2,20 +2,51 @@
 
 Rust 实现的 BitTorrent DHT 爬虫，支持元数据下载、种子信息存储与 Web 管理面板。
 
+## 架构
+
+```
+DHT 网络 (BEP-5)
+   |
+   v
+DHT 节点 (UDP 6881)
+   |-- on_announce_peer --> 发现 infohash
+   |-- on_get_peers -----> 发现 peer
+   |
+   v
+Wire 协议 (BEP-9/10)
+   |-- 连接 peer ---------> 下载 .torrent 元数据
+   |-- ut_pex (BEP-11) ---> 发现更多 peer
+   |
+   v
+SQLite 持久化 (torrents.db)
+   |-- 存储种子名称、文件列表、大小
+   |
+   v
+Axum Web 服务器 (TCP 3000)
+   |-- 密钥认证
+   |-- 管理面板（内嵌前端）
+   |-- REST API
+```
+
+1. DHT 节点以 Crawl 模式加入 BitTorrent 网络，自动发现 infohash 和 peer
+2. 通过 Wire 协议连接 peer，下载完整 .torrent 元数据（名称、文件列表、大小）
+3. 元数据自动存入 SQLite 数据库（WAL 模式）
+4. 内置 Web 管理面板，支持浏览、搜索、查询种子
+
 ## 功能特性
 
-- **DHT 爬虫（BEP-5）**：支持 Standard 与 Crawl 两种模式，自动发现 infohash
-- **元数据下载（BEP-9/10）**：通过 Wire 协议从 peer 下载 .torrent 元数据
-- **对等交换（BEP-11）**：解析 ut_pex 扩展，发现更多 peer
-- **SQLite 持久化**：自动存储成功下载的种子信息（名称、文件列表、大小）
-- **Web 管理面板**：内置中文界面，支持分页浏览、搜索、按行查询、磁力链接复制
-- **密钥认证**：启动时生成随机访问密钥，保护 Web 面板和 API
+- **DHT 爬虫（BEP-5）** — 支持 Standard 与 Crawl 两种模式，自动发现 infohash
+- **元数据下载（BEP-9/10）** — 通过 Wire 协议从 peer 下载 .torrent 元数据
+- **对等交换（BEP-11）** — 解析 ut_pex 扩展，发现更多 peer
+- **SQLite 持久化** — 自动存储成功下载的种子信息（名称、文件列表、大小）
+- **Web 管理面板** — 内置中文界面，支持分页浏览、搜索、按行查询、磁力链接复制
+- **密钥认证** — 启动时通过命令行参数指定访问密钥，保护 Web 面板和 API
 
 ## 快速开始
 
 ```bash
 cargo build --release
-cargo run
+cargo run -- -m <你的密钥>
 ```
 
 启动后控制台输出示例：
@@ -27,6 +58,15 @@ cargo run
 ```
 
 浏览器访问 `http://localhost:3000`，输入控制台显示的密钥即可进入面板。
+
+## 技术栈
+
+- **语言**: Rust (Edition 2021)
+- **异步运行时**: Tokio（多线程）
+- **Web 框架**: Axum 0.7 + tower-http (CORS)
+- **数据库**: rusqlite（内嵌 SQLite，bundled 模式）
+- **序列化**: serde + serde_json
+- **并发容器**: dashmap
 
 ## Web 面板功能
 
@@ -54,14 +94,17 @@ cargo run
 
 开箱即用，无需额外配置。主要默认参数：
 
-- **监听**：UDP `0.0.0.0:6881`（DHT）、TCP `0.0.0.0:3000`（Web）
-- **模式**：Crawl
-- **数据库**：`torrents.db`（SQLite WAL 模式）
-- **路由**：k=8，最大节点 5000
-- **事务**：上限 10000 条，指数退避重试
-- **Wire 并发**：256 个 worker，请求队列 TTL 600 秒
-- **Peer 表**：上限 50000 个 infohash
-- **黑名单**：上限 65536 条目
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| DHT 监听 | UDP `0.0.0.0:6881` | DHT 节点监听地址 |
+| Web 监听 | TCP `0.0.0.0:3000` | Web 服务器监听地址 |
+| DHT 模式 | Crawl | 高效爬取模式 |
+| 数据库 | `torrents.db` | SQLite WAL 模式 |
+| K-Bucket | k=8，最大 5000 节点 | 路由表参数 |
+| 事务上限 | 10000 条 | 指数退避重试 |
+| Wire 并发 | 256 worker，队列 TTL 600s | 元数据下载并发 |
+| Peer 表 | 上限 50000 个 infohash | Peer 管理容量 |
+| 黑名单 | 上限 65536 条目 | IP 黑名单 |
 
 ## 项目结构
 
@@ -71,7 +114,7 @@ src/
 ├── dht.rs          # DHT 节点核心（BEP-5）
 ├── wire.rs         # Wire 协议元数据下载（BEP-9/10）
 ├── storage.rs      # SQLite 存储层
-├── web.rs          # Axum Web 服务器 + 内嵌前端
+├── web.rs          # Axum Web 服务器 + 内嵌前端（单 HTML 常量）
 ├── routing.rs      # K-Bucket 路由表
 ├── transaction.rs  # 事务管理（超时、重试、容量限制）
 ├── peers.rs        # Peer 管理器
@@ -79,7 +122,8 @@ src/
 ├── krpc.rs         # KRPC 消息编码/解码
 ├── bencode.rs      # Bencode 编解码
 ├── types.rs        # 公共类型定义
-└── util.rs         # 工具函数
+├── util.rs         # 工具函数
+└── logger.rs       # 小时级日志轮转
 ```
 
 ## 输出格式
@@ -89,6 +133,8 @@ src/
 ```json
 {"type":"metadata","infohash":"a1b2c3...","name":"Example","files":[{"path":["dir","file.mkv"],"length":123456789}]}
 ```
+
+日志文件自动写入 `logs/` 目录，按小时轮转。
 
 ## License
 

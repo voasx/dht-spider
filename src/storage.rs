@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 pub struct Storage {
     conn: Mutex<Connection>,
+    db_path: String,
 }
 
 #[derive(Clone)]
@@ -27,7 +28,7 @@ impl Storage {
              );
              CREATE INDEX IF NOT EXISTS idx_torrents_created_at ON torrents(created_at);"
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), db_path: path.to_string() })
     }
 
     pub fn insert(&self, infohash: &str, name: &str, files_json: &str) -> Result<(), rusqlite::Error> {
@@ -79,6 +80,17 @@ impl Storage {
         let conn = self.conn.lock().unwrap();
         let total: u32 = conn.query_row("SELECT COUNT(*) FROM torrents", [], |r| r.get(0))?;
         Ok(total)
+    }
+
+    pub fn db_size(&self) -> u64 {
+        let mut total: u64 = 0;
+        for suffix in &["", "-wal", "-shm"] {
+            let path = format!("{}{}", self.db_path, suffix);
+            if let Ok(meta) = std::fs::metadata(&path) {
+                total += meta.len();
+            }
+        }
+        total
     }
 
     pub fn get_by_infohash(&self, infohash: &str) -> Result<Option<TorrentEntry>, rusqlite::Error> {
